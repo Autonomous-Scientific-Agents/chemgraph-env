@@ -1,0 +1,12 @@
+# SHA-256 measured from the 79,462,305-byte upstream release asset.
+# Keep the original URL too: MACE 0.3.16 maps this name through mace-mp.
+mace_version = "0.3.16"
+
+[[models]]
+name = "medium-mpa-0"
+url = "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mpa_0/mace-mpa-0-medium.model"
+mace_url = "https://github.com/ACEsuit/mace-mp/releases/download/mace_mpa_0/mace-mpa-0-medium.model"
+sha256 = "75428afe3a1d7d8062e19bcaabd5c433623cabf308242ec9fb493e38604fb638"
+cache_filename = "macempa0mediummodel"
+license = "MIT"
+source = "https://github.com/ACEsuit/mace-foundations/releases/tag/mace_mpa_0"

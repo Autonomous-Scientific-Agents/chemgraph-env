@@ -1,0 +1,5 @@
+# Update this commit and regenerate locks together. Never resolve moving main.
+chemgraph[calculators] @ git+https://github.com/argonne-lcf/ChemGraph.git@465e03436e56e1374480fe5a3bd4a735a1c56db2
+# Cache behavior is tested against this version.
+mace-torch==0.3.16
+pip==25.2

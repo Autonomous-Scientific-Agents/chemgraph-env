@@ -1,0 +1,10 @@
+# Candidate profile based on ALCF documentation; not a certified deployment.
+machine = "polaris"
+python = "python3"
+modules = ["conda/2026-10-01"]
+module_paths = ["/soft/modulefiles"]
+conda_base = true
+system_site_packages = true
+device = "cuda"
+dtype = "float64"
+lock = "../requirements/locks/polaris"

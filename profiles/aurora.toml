@@ -1,0 +1,10 @@
+# Candidate profile based on ALCF documentation; not a certified deployment.
+machine = "aurora"
+python = "python3"
+modules = ["frameworks/2026.1.0"]
+module_paths = []
+conda_base = false
+system_site_packages = true
+device = "xpu"
+dtype = "float32"
+lock = "../requirements/locks/aurora"

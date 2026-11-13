@@ -1,0 +1,11 @@
+# Candidate profile. Run prepare-lock on Crux before installing.
+machine = "crux"
+python = "python3"
+modules = []
+module_paths = []
+conda_base = false
+system_site_packages = false
+device = "cpu"
+dtype = "float64"
+cpu_torch = "2.8.0+cpu"
+lock = "../requirements/locks/crux"
