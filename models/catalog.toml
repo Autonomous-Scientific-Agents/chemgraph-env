@@ -1,12 +1,23 @@
-# SHA-256 measured from the 79,462,305-byte upstream release asset.
-# Keep the original URL too: MACE 0.3.16 maps this name through mace-mp.
-mace_version = "0.3.16"
+# Exact deployment version; update requirements/base.in and regenerate locks together.
+mace_version = "0.3.17"
 
 [[models]]
 name = "medium-mpa-0"
+calculator_type = "mace_mp"
 url = "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mpa_0/mace-mpa-0-medium.model"
 mace_url = "https://github.com/ACEsuit/mace-mp/releases/download/mace_mpa_0/mace-mpa-0-medium.model"
 sha256 = "75428afe3a1d7d8062e19bcaabd5c433623cabf308242ec9fb493e38604fb638"
 cache_filename = "macempa0mediummodel"
 license = "MIT"
 source = "https://github.com/ACEsuit/mace-foundations/releases/tag/mace_mpa_0"
+
+[[models]]
+name = "polar-1-m"
+calculator_type = "mace_polar"
+url = "https://github.com/ACEsuit/mace-foundations/releases/download/mace_polar_1/MACE-POLAR-1-M.model"
+mace_url = "https://github.com/ACEsuit/mace-foundations/releases/download/mace_polar_1/MACE-POLAR-1-M.model"
+# SHA-256 published in the upstream GitHub release asset metadata.
+sha256 = "fab8b8713c832f31a2a853aaa22fd638be8a369cbf5095e6b3e982a18d10e93a"
+cache_filename = "MACEPOLAR1Mmodel"
+license = "ASL"
+source = "https://github.com/ACEsuit/mace-foundations/releases/tag/mace_polar_1"

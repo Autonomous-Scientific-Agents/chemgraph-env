@@ -22,6 +22,8 @@ import install
 import models
 import probe
 import runtime
+import validation
+from calculators import DEFAULT_MODELS, REQUIRED_CALCULATIONS, acceptance_cases
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,9 +57,13 @@ class Workspace(unittest.TestCase):
         checkpoint = self.root / "shared models/model.model"
         checkpoint.parent.mkdir()
         checkpoint.write_bytes(b"immutable model fixture")
-        record = {"name": "medium-mpa-0", "path": str(checkpoint),
+        record = {"name": "medium-mpa-0", "calculator_type": "mace_mp", "path": str(checkpoint),
                   "cache_filename": "macempa0mediummodel", "sha256": core.digest(checkpoint)}
-        manifest = {"schema_version": 1, "deployment_id": "test-release", "models": [record],
+        polar = checkpoint.with_name("polar.model")
+        polar.write_bytes(b"polar model fixture")
+        polar_record = {"name": "polar-1-m", "calculator_type": "mace_polar", "path": str(polar),
+                        "cache_filename": "MACEPOLAR1Mmodel", "sha256": core.digest(polar)}
+        manifest = {"schema_version": 1, "deployment_id": "test-release", "models": [record, polar_record],
                     "prefix": str(prefix), "profile": profile(), "builder_uid": os.getuid(),
                     "status": "installed-unvalidated", "calculate_sha256": hashlib.sha256(b"pass\n").hexdigest()}
         core.write_json(prefix / "manifest.json", manifest)
@@ -102,7 +108,7 @@ class Entrypoints(Workspace):
     def test_missing_lock_fails_without_creating_prefix(self):
         target = self.root / "env"
         with self.assertRaisesRegex(ValueError, "Missing prepared lock"):
-            install.install(profile(), "uv", target, self.root / "models", {})
+            install.install(profile(), "uv", target, self.root / "models", {"mace_version": "0.3.17"})
         self.assertFalse(target.exists())
 
     def test_relative_prefix_is_rejected(self):
@@ -158,7 +164,7 @@ class LockProtection(Workspace):
         prefix = self.root / "env"
         with patch.object(install, "snapshot", return_value=changed):
             with self.assertRaisesRegex(ValueError, "Base environment changed"):
-                install.install(config, "native", prefix, self.root / "models", {})
+                install.install(config, "native", prefix, self.root / "models", {"mace_version": "0.3.17"})
         self.assertFalse(prefix.exists())
 
     def test_existing_prefix_is_preserved(self):
@@ -226,7 +232,10 @@ class LockProtection(Workspace):
                     return subprocess.CompletedProcess(command, 0, stdout, "")
 
                 def verify(*args, **kwargs):
-                    return {"packages": {"chemgraph": {"version": "0.7.0", "location": str(reference[0] / "lib")}}}
+                    return {"packages": {
+                        "chemgraph": {"version": "0.7.0", "location": str(reference[0] / "lib")},
+                        "mace-torch": {"version": "0.3.17", "location": str(reference[0] / "lib")},
+                    }}
 
                 with ExitStack() as stack:
                     stack.enter_context(patch.object(install, "snapshot", return_value=base("polaris")))
@@ -242,7 +251,7 @@ class LockProtection(Workspace):
                         install.prepare_lock(config, output)
                         lock = core.read_json(output / "lock.json")
                         self.assertTrue(lock["prepared_only"])
-                        self.assertEqual(lock["overlay_packages"], {"chemgraph": "0.7.0"})
+                        self.assertEqual(lock["overlay_packages"], {"chemgraph": "0.7.0", "mace-torch": "0.3.17"})
                         self.assertEqual(lock["overlay_sha256"], core.digest(output / "overlay.txt"))
                         resolution = next(c for c in commands if "--dry-run" in c)
                         self.assertNotIn("--ignore-installed", resolution)
@@ -255,7 +264,7 @@ class LockProtection(Workspace):
              patch.object(install, "records", return_value=[]), \
              patch.object(install, "run", side_effect=RuntimeError("installer failed")):
             with self.assertRaisesRegex(RuntimeError, "installer failed"):
-                install.install(config, "native", prefix, self.root / "models", {"mace_version": "0.3.16"})
+                install.install(config, "native", prefix, self.root / "models", {"mace_version": "0.3.17"})
         self.assertEqual(core.read_json(prefix / "manifest.json")["status"], "failed")
         with self.assertRaisesRegex(ValueError, "incomplete"):
             handoff.prepare_iri(prefix, self.root / "iri")
@@ -278,14 +287,17 @@ class LockProtection(Workspace):
                         stdout = str(helper) + "\n" if "-c" in command else ""
                         return subprocess.CompletedProcess(command, 0, stdout, "")
 
-                    installed = {"packages": {"chemgraph": {"version": "0.7.0", "location": str(prefix / "venv/lib")}}}
+                    installed = {"packages": {
+                        "chemgraph": {"version": "0.7.0", "location": str(prefix / "venv/lib")},
+                        "mace-torch": {"version": "0.3.17", "location": str(prefix / "venv/lib")},
+                    }}
                     with ExitStack() as stack:
                         stack.enter_context(patch.object(install, "snapshot", return_value=lock["base"]))
                         stack.enter_context(patch.object(install, "records", return_value=[]))
                         stack.enter_context(patch.object(install.shutil, "which", return_value="/tools/uv"))
                         stack.enter_context(patch.object(install, "run", side_effect=fake_run))
                         stack.enter_context(patch.object(install, "verify_environment", return_value=installed))
-                        install.install(config, method, prefix, self.root / "models", {"mace_version": "0.3.16"})
+                        install.install(config, method, prefix, self.root / "models", {"mace_version": "0.3.17"})
                     self.assertEqual(core.read_json(prefix / "manifest.json")["status"], "installed-unvalidated")
                     installs = [c for c in commands if "install" in c]
                     self.assertEqual(len(installs), 1)
@@ -303,6 +315,55 @@ class SharedModels(Workspace):
         data = models.catalog(ROOT / "models/catalog.toml")
         self.assertEqual(data["models"][0]["cache_filename"], "macempa0mediummodel")
         self.assertEqual(len(data["models"][0]["sha256"]), 64)
+        self.assertEqual({(m["calculator_type"], m["name"]) for m in data["models"]}, set(DEFAULT_MODELS.items()))
+        models.check_mace_pin(data, (ROOT / "requirements/base.in").read_text())
+
+    def test_newer_mace_version_is_configurable_but_must_match_requirements(self):
+        catalog_file = self.root / "catalog.toml"
+        catalog_file.write_text((ROOT / "models/catalog.toml").read_text().replace('"0.3.17"', '"0.3.18"'))
+        newer = models.catalog(catalog_file)
+        requirements = (ROOT / "requirements/base.in").read_text()
+        models.check_mace_pin(newer, requirements.replace("==0.3.17", "==0.3.18"))
+        with self.assertRaisesRegex(ValueError, "exact mace_version"):
+            models.check_mace_pin(newer, requirements)
+
+    def test_polar_extra_cannot_be_accidentally_omitted(self):
+        data = models.catalog(ROOT / "models/catalog.toml")
+        requirements = (ROOT / "requirements/base.in").read_text().replace("mace-torch[polar]", "mace-torch")
+        with self.assertRaisesRegex(ValueError, "mace-torch"):
+            models.check_mace_pin(data, requirements)
+
+    def test_multiple_local_sources_require_a_model_selection(self):
+        data = models.catalog(ROOT / "models/catalog.toml")
+        with self.assertRaisesRegex(ValueError, "--model"):
+            models.provision(self.root / "models", data, self.root / "any.model")
+        self.assertFalse((self.root / "models").exists())
+        selected = models.select_models(data, "polar-1-m")
+        self.assertEqual(len(selected["models"]), 1)
+        self.assertEqual(selected["models"][0]["calculator_type"], "mace_polar")
+        self.assertEqual(len(data["models"]), 2)
+        with self.assertRaisesRegex(ValueError, "not in the maintained catalog"):
+            models.select_models(data, "unknown")
+
+    def test_both_model_families_use_the_correct_cache_loader(self):
+        _, manifest = self.deployment()
+        calls = {"mace_mp": [], "mace_polar": []}
+        downloaders, tables = {}, {}
+        for record in manifest["models"]:
+            family = record["calculator_type"]
+            record["mace_url"] = f"https://example.org/{record['name']}.model"
+            tables[family] = {record["name"]: record["mace_url"]}
+
+            def locate(requested, family=family, path=record["path"]):
+                calls[family].append(requested)
+                return path
+
+            downloaders[family] = locate
+        validation.check_mace_cache(manifest, downloaders, tables)
+        self.assertEqual(calls, {"mace_mp": [None, "medium-mpa-0"], "mace_polar": ["polar-1-m"]})
+        tables["mace_polar"]["polar-1-m"] = "https://example.org/changed.model"
+        with self.assertRaisesRegex(ValueError, "URL changed"):
+            validation.check_mace_cache(manifest, downloaders, tables)
 
     def test_local_provision_is_verified_and_repeatable(self):
         source = self.root / "source"
@@ -345,6 +406,9 @@ class SharedModels(Workspace):
         link = paths[0] / "mace/macempa0mediummodel"
         self.assertTrue(link.is_symlink())
         self.assertEqual(link.resolve(), Path(manifest["models"][0]["path"]))
+        polar_link = paths[0] / "mace/MACEPOLAR1Mmodel"
+        self.assertTrue(polar_link.is_symlink())
+        self.assertEqual(polar_link.resolve(), Path(manifest["models"][1]["path"]))
 
     def test_conflicting_user_file_is_preserved(self):
         _, manifest = self.deployment()
@@ -368,6 +432,8 @@ class SharedModels(Workspace):
                                     text=True, capture_output=True, check=True)
             link = Path(result.stdout.strip()) / "mace/macempa0mediummodel"
             self.assertEqual(link.resolve(), Path(manifest["models"][0]["path"]))
+            polar_link = Path(result.stdout.strip()) / "mace/MACEPOLAR1Mmodel"
+            self.assertEqual(polar_link.resolve(), Path(manifest["models"][1]["path"]))
 
     def test_unavailable_shared_model_fails_activation(self):
         prefix, manifest = self.deployment()
@@ -389,11 +455,15 @@ class Handoff(Workspace):
         iri = self.root / "iri"
         iri.mkdir()
         core.write_json(compute, {**common, "kind": "compute", "device": "cpu", "pbs_job_id": "1.pbs",
-            "downloads_disabled": True, "calculations": {name: {} for name in ("emt", "tblite", "mace-default", "mace-named")}})
+            "downloads_disabled": True, "calculations": {
+                name: {"energy_eV": -1.2, "forces_finite": True, "dipole_finite": True}
+                for name in REQUIRED_CALCULATIONS}})
         core.write_json(access, {**common, "kind": "access", "uid": os.getuid() + 1})
-        core.write_json(iri / "result.json", {"success": True, "converged": True, "potential_energy": -1.2})
+        core.write_json(iri / "result.json", {"success": True, "converged": True, "potential_energy": -1.2,
+            "simulation_input": {"calculator": {"calculator_type": "mace_polar"}}})
         core.write_json(iri / "acceptance.json", {**common, "kind": "iri", "pbs_job_id": "2.pbs",
-            "calculate_sha256": manifest["calculate_sha256"], "result_sha256": core.digest(iri / "result.json")})
+            "calculator_type": "mace_polar", "calculate_sha256": manifest["calculate_sha256"],
+            "result_sha256": core.digest(iri / "result.json")})
         return prefix, compute, access, iri
 
     def test_published_toml_quotes_paths_and_preserves_model_names(self):
@@ -404,6 +474,32 @@ class Handoff(Workspace):
         self.assertEqual(shlex.split(data["environment_setup"]), ["source", str(prefix / "setup.sh")])
         self.assertEqual(data["python"], str(prefix / "venv/bin/python"))
         self.assertEqual(core.read_json(output / "calculators.json")["mace"]["model"], "medium-mpa-0")
+        self.assertEqual(core.read_json(output / "calculators.json")["mace_polar"]["model"], "polar-1-m")
+
+    def test_publish_requires_polar_dipole_checks(self):
+        prefix, compute, access, iri = self.evidence()
+        data = core.read_json(compute)
+        del data["calculations"]["mace-polar-default"]["dipole_finite"]
+        core.write_json(compute, data)
+        with self.assertRaisesRegex(ValueError, "dipole acceptance"):
+            handoff.publish(prefix, compute, access, iri, "iri-id", self.root / "out")
+
+    def test_mp_only_iri_evidence_cannot_publish_polar_support(self):
+        prefix, compute, access, iri = self.evidence()
+        data = core.read_json(iri / "acceptance.json")
+        data["calculator_type"] = "mace_mp"
+        core.write_json(iri / "acceptance.json", data)
+        with self.assertRaisesRegex(ValueError, "IRI MACE-Polar"):
+            handoff.publish(prefix, compute, access, iri, "iri-id", self.root / "out")
+
+    def test_both_families_have_named_and_default_acceptance_on_each_machine(self):
+        for machine in core.MACHINES:
+            cases = acceptance_cases(profile(machine))
+            self.assertEqual(set(cases), REQUIRED_CALCULATIONS)
+            self.assertNotIn("model", cases["mace-polar-default"])
+            self.assertEqual(cases["mace-polar-named"]["model"], "polar-1-m")
+            self.assertEqual(cases["mace-polar-default"]["device"], core.MACHINES[machine])
+            self.assertEqual(cases["mace-polar-default"]["multiplicity"], 1)
 
     def test_publish_requires_a_different_account(self):
         prefix, compute, access, iri = self.evidence()
@@ -431,6 +527,8 @@ class Handoff(Workspace):
         prefix, manifest = self.deployment()
         bundle = self.root / "iri run"
         handoff.prepare_iri(prefix, bundle)
+        self.assertEqual(core.read_json(bundle / "input.json")["calculator"]["calculator_type"], "mace_polar")
+        self.assertNotIn("model", core.read_json(bundle / "input.json")["calculator"])
         self.assertEqual(core.digest(bundle / "calculate.py"), manifest["calculate_sha256"])
         subprocess.run(["bash", "-n", str(bundle / "launch.sh")], check=True)
         nodefile = self.root / "nodes"
@@ -438,11 +536,18 @@ class Handoff(Workspace):
         env = {**os.environ, "CHEMGRAPH_DEPLOYMENT": str(prefix), "PBS_JOBID": "123.pbs", "PBS_NODEFILE": str(nodefile)}
         command = [sys.executable, str(bundle / "acceptance.py")]
         subprocess.run([*command, "before"], cwd=bundle, env=env, check=True)
-        core.write_json(bundle / "result.json", {"success": True, "converged": True, "potential_energy": -2.5})
+        core.write_json(bundle / "result.json", {"success": True, "converged": True, "potential_energy": -2.5,
+            "simulation_input": {"calculator": {"calculator_type": "mace_polar"}}})
         subprocess.run([*command, "after"], cwd=bundle, env=env, check=True)
         self.assertEqual(core.read_json(bundle / "acceptance.json")["pbs_job_id"], "123.pbs")
         repeated = subprocess.run([*command, "before"], cwd=bundle, env=env, capture_output=True)
         self.assertNotEqual(repeated.returncode, 0)
+
+    def test_mp_iri_bundle_remains_available(self):
+        prefix, _ = self.deployment()
+        bundle = self.root / "mp run"
+        handoff.prepare_iri(prefix, bundle, "mace_mp")
+        self.assertEqual(core.read_json(bundle / "input.json")["calculator"]["calculator_type"], "mace_mp")
 
 
 class DependencyAudit(unittest.TestCase):
@@ -453,13 +558,15 @@ class DependencyAudit(unittest.TestCase):
 
         packages = {
             "chemgraph": Distribution("0.7.0", ['tblite==0.4.0; extra == "calculators"', "mace-torch>=0.3.16"]),
-            "mace-torch": Distribution("0.3.16", ["e3nn<0.5"]),
+            "mace-torch": Distribution("0.3.17", ["e3nn<0.5", 'graph_longrange>=0.4.4; extra == "polar"']),
             "e3nn": Distribution("0.5.1"),
+            "graph-longrange": Distribution("0.4.0"),
         }
         with patch.object(probe, "distributions", return_value=packages):
             result = probe.audit()
         self.assertTrue(any("tblite" in error for error in result["errors"]))
         self.assertTrue(any("e3nn" in error for error in result["errors"]))
+        self.assertTrue(any("graph_longrange" in error for error in result["errors"]))
 
 
 if __name__ == "__main__":

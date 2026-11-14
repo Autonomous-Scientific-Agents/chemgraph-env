@@ -12,6 +12,7 @@ import sys
 from unittest.mock import patch
 
 from core import assert_base_matches, digest, read_json, snapshot, write_json
+from calculators import acceptance_cases
 from install import verify_environment
 from runtime import prepare_cache
 
@@ -50,11 +51,27 @@ def scientific_success(path):
     return data
 
 
+def check_mace_cache(manifest, downloaders, url_tables):
+    """Resolve model names through each family's real loader, without downloads."""
+    for model in manifest["models"]:
+        family = model["calculator_type"]
+        if url_tables[family].get(model["name"]) != model["mace_url"]:
+            raise ValueError("Pinned MACE model URL changed; update the cache contract")
+        # MACE-MP accepts None. ChemGraph resolves Polar's omitted model to
+        # polar-1-m before calling MACE; acceptance_cases tests that path below.
+        requested_models = (None, model["name"]) if family == "mace_mp" else (model["name"],)
+        for requested in requested_models:
+            located = Path(downloaders[family](requested))
+            if digest(located) != model["sha256"]:
+                raise ValueError("MACE selected a different checkpoint")
+
+
 def compute(manifest, output):
     job_id = allocation()
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     import importlib.metadata as metadata
+    from importlib import import_module
     import numpy as np
     import torch
     from ase import Atoms
@@ -62,7 +79,10 @@ def compute(manifest, output):
     from ase.io import write
     from chemgraph.schemas.ase_input import ASEInputSchema
     from chemgraph.tools.ase_core import load_calculator, run_ase_core
-    from mace.calculators.foundations_models import download_mace_mp_checkpoint, mace_mp_urls
+    from chemgraph.utils.calculator_defaults import get_default_mace_calculator_type
+    from mace.calculators.foundations_models import (
+        download_mace_mp_checkpoint, download_mace_polar_checkpoint, mace_mp_urls, polar_model_urls,
+    )
 
     torch.set_num_threads(1)
     profile = manifest["profile"]
@@ -71,6 +91,9 @@ def compute(manifest, output):
     verify_environment(profile, sys.executable, base, manifest["lock"]["base_conflicts"])
     if metadata.version("mace-torch") != manifest["mace_version"]:
         raise ValueError("MACE version differs from the cache contract")
+    import_module("graph_longrange")
+    if get_default_mace_calculator_type() != "mace_polar":
+        raise ValueError("ChemGraph did not detect the installed MACE-Polar add-on")
     if profile["system_site_packages"]:
         origin = Path(base["packages"]["torch"]["location"])
         if not Path(torch.__file__).resolve().is_relative_to(origin):
@@ -88,21 +111,10 @@ def compute(manifest, output):
     # Any attempted download fails, even if the compute node has a proxy.
     with patch("socket.socket.connect", side_effect=RuntimeError("Network disabled for acceptance")), \
          patch("urllib.request.urlopen", side_effect=RuntimeError("Model downloads disabled")):
-        for model in manifest["models"]:
-            if mace_mp_urls.get(model["name"]) != model["mace_url"]:
-                raise ValueError("Pinned MACE model URL changed; update the cache contract")
-            for requested in (None, model["name"]):
-                located = Path(download_mace_mp_checkpoint(requested))
-                if digest(located) != model["sha256"]:
-                    raise ValueError("MACE selected a different checkpoint")
-        calculators = {
-            "emt": {"calculator_type": "emt"},
-            "tblite": {"calculator_type": "tblite", "method": "GFN2-xTB"},
-            "mace-default": {"calculator_type": "mace_mp", "device": device,
-                             "default_dtype": profile["dtype"]},
-            "mace-named": {"calculator_type": "mace_mp", "model": "medium-mpa-0",
-                           "device": device, "default_dtype": profile["dtype"]},
-        }
+        check_mace_cache(manifest,
+                         {"mace_mp": download_mace_mp_checkpoint, "mace_polar": download_mace_polar_checkpoint},
+                         {"mace_mp": mace_mp_urls, "mace_polar": polar_model_urls})
+        calculators = acceptance_cases(profile)
         for name, calculator in calculators.items():
             atoms = Atoms("Cu2", positions=[[0, 0, 0], [2.4, 0, 0]]) if name == "emt" else molecule("H2O")
             structure = output / f"{name}.xyz"
@@ -115,14 +127,21 @@ def compute(manifest, output):
             if response.get("status") != "success":
                 raise ValueError(f"ChemGraph failed for {name}: {response}")
             data = scientific_success(result_file)
-            atoms.calc = load_calculator(calculator)[0]
+            atoms.calc, properties, _ = load_calculator(calculator)
+            atoms.info.update(properties)
             forces = atoms.get_forces()
             if forces.shape != (len(atoms), 3) or not np.isfinite(forces).all():
                 raise ValueError(f"Invalid forces from {name}")
             results[name] = {"energy_eV": data["potential_energy"], "forces_finite": True}
-    if not math.isclose(results["mace-default"]["energy_eV"], results["mace-named"]["energy_eV"],
-                        rel_tol=1e-5, abs_tol=1e-4):
-        raise ValueError("Named and default MACE model results disagree")
+            if calculator["calculator_type"] == "mace_polar":
+                dipole = np.asarray(atoms.get_dipole_moment())
+                if dipole.shape != (3,) or not np.isfinite(dipole).all():
+                    raise ValueError(f"Invalid dipole from {name}")
+                results[name].update(dipole_finite=True, dipole_eA=dipole.tolist())
+    for family in ("mace", "mace-polar"):
+        if not math.isclose(results[f"{family}-default"]["energy_eV"], results[f"{family}-named"]["energy_eV"],
+                            rel_tol=1e-5, abs_tol=1e-4):
+            raise ValueError(f"Named and default {family} model results disagree")
     return {"pbs_job_id": job_id, "device": device, "torch_version": torch.__version__,
             "torch_origin": torch.__file__, "calculations": results, "downloads_disabled": True}
 

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 
 from core import digest, read_json, write_json
+from calculators import REQUIRED_CALCULATIONS, examples
 
 
 def deployment(prefix):
@@ -25,8 +26,10 @@ def validate(prefix, kind, output):
                     str(prefix), kind, str(output)], check=True)
 
 
-def prepare_iri(prefix, output):
+def prepare_iri(prefix, output, calculator_type="mace_polar"):
     manifest = deployment(prefix)
+    if calculator_type not in {"mace_mp", "mace_polar"}:
+        raise ValueError("IRI acceptance requires mace_mp or mace_polar")
     if output.is_relative_to(prefix):
         raise ValueError("Acceptance output must be outside the shared environment")
     output.mkdir(parents=True, exist_ok=False)
@@ -38,6 +41,7 @@ def prepare_iri(prefix, output):
         "schema_version": 1, "deployment_id": manifest["deployment_id"],
         "manifest_sha256": digest(prefix / "manifest.json"),
         "calculate_sha256": manifest["calculate_sha256"],
+        "calculator_type": calculator_type,
     })
     (output / "structure.xyz").write_text(
         "3\nWater for MACE acceptance\nO 0.0 0.0 0.0\nH 0.0 0.757 0.586\nH 0.0 -0.757 0.586\n"
@@ -45,7 +49,7 @@ def prepare_iri(prefix, output):
     profile = manifest["profile"]
     write_json(output / "input.json", {
         "input_structure_file": "structure.xyz", "output_results_file": "result.json",
-        "driver": "energy", "calculator": {"calculator_type": "mace_mp",
+        "driver": "energy", "calculator": {"calculator_type": calculator_type,
             "device": profile["device"], "default_dtype": profile["dtype"]},
     })
     python = shlex.quote(str(prefix / "venv/bin/python"))
@@ -76,12 +80,23 @@ def publish(prefix, compute_file, access_file, iri_run, iri_job_id, output):
         raise ValueError("Access report must be from a second authorized account")
     if (compute.get("device") != manifest["profile"]["device"]
             or not compute.get("pbs_job_id") or compute.get("downloads_disabled") is not True
-            or set(compute.get("calculations", {})) != {"emt", "tblite", "mace-default", "mace-named"}):
+            or set(compute.get("calculations", {})) != REQUIRED_CALCULATIONS):
         raise ValueError("Compute report does not cover the required acceptance tests")
+    for name, calculation in compute["calculations"].items():
+        energy = calculation.get("energy_eV")
+        if (calculation.get("forces_finite") is not True or isinstance(energy, bool)
+                or not isinstance(energy, (int, float)) or not math.isfinite(energy)):
+            raise ValueError(f"Missing energy/force acceptance for {name}")
+        if name.startswith("mace-polar") and calculation.get("dipole_finite") is not True:
+            raise ValueError(f"Missing dipole acceptance for {name}")
+    if iri.get("calculator_type") != "mace_polar":
+        raise ValueError("Publishing requires an IRI MACE-Polar acceptance run")
     if (not iri.get("pbs_job_id") or iri.get("calculate_sha256") != manifest["calculate_sha256"]
             or digest(iri_run / "result.json") != iri.get("result_sha256")):
         raise ValueError("IRI calculation evidence does not match its results")
     result = read_json(iri_run / "result.json")
+    if result.get("simulation_input", {}).get("calculator", {}).get("calculator_type") != "mace_polar":
+        raise ValueError("IRI results are not from the required MACE-Polar calculator")
     energy = result.get("potential_energy")
     if (result.get("success") is not True or result.get("converged") is not True
             or isinstance(energy, bool) or not isinstance(energy, (int, float))
@@ -103,10 +118,5 @@ def publish(prefix, compute_file, access_file, iri_run, iri_job_id, output):
         + "environment_setup = " + json.dumps("source " + shlex.quote(str(prefix / "setup.sh"))) + "\n"
         + "python = " + json.dumps(str(prefix / "venv/bin/python")) + "\n"
     )
-    write_json(output / "calculators.json", {
-        "mace": {"calculator_type": "mace_mp", "model": "medium-mpa-0",
-                 "device": manifest["profile"]["device"], "default_dtype": manifest["profile"]["dtype"]},
-        "tblite": {"calculator_type": "tblite", "method": "GFN2-xTB"},
-        "emt": {"calculator_type": "emt"},
-    })
+    write_json(output / "calculators.json", examples(manifest["profile"]))
     print(f"Validated handoff written to {output}. Copy its environment fields into ChemGraph skills.")

@@ -46,7 +46,8 @@ def audit():
 
     found = distributions()
     active = {}
-    pending = [("chemgraph", {"calculators"}), ("mace-torch", set()), ("tblite", set())]
+    pending = [("chemgraph", {"calculators"}), ("mace-torch", {"polar"}),
+               ("graph-longrange", set()), ("tblite", set())]
     errors = set()
     while pending:
         name, extras = pending.pop()

@@ -9,15 +9,18 @@ import tomllib
 import urllib.request
 
 from core import digest
+from calculators import DEFAULT_MODELS
 
 
 def catalog(path):
     with open(path, "rb") as handle:
         data = tomllib.load(handle)
-    if data.get("mace_version") != "0.3.16" or not data.get("models"):
-        raise ValueError("Catalog must declare the tested MACE version and models")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(data.get("mace_version", ""))) or not data.get("models"):
+        raise ValueError("Catalog must declare an exact MACE release version and models")
     names, files = set(), set()
     for model in data["models"]:
+        if model.get("calculator_type") not in DEFAULT_MODELS:
+            raise ValueError("Model calculator_type must be mace_mp or mace_polar")
         if not re.fullmatch(r"[a-z0-9-]+", model["name"]):
             raise ValueError("Invalid model name")
         if not re.fullmatch(r"[0-9a-f]{64}", model["sha256"]):
@@ -31,7 +34,26 @@ def catalog(path):
         files.add(filename)
         if not model["url"].startswith("https://") or not model["mace_url"].startswith("https://"):
             raise ValueError("Model source must use HTTPS")
+    supported = {(model["calculator_type"], model["name"]) for model in data["models"]}
+    if not set(DEFAULT_MODELS.items()) <= supported:
+        raise ValueError("Catalog must include the default MACE-MP and MACE-Polar checkpoints")
     return data
+
+
+def check_mace_pin(data, requirements):
+    pins = re.findall(r"^mace-torch\[([^\]]+)\]==([0-9]+\.[0-9]+\.[0-9]+)\s*$",
+                      requirements, re.MULTILINE)
+    if len(pins) != 1 or "polar" not in pins[0][0].split(",") or pins[0][1] != data["mace_version"]:
+        raise ValueError("Pin mace-torch[polar] to the catalog's exact mace_version and regenerate locks")
+
+
+def select_models(data, name=None):
+    if name is None:
+        return data
+    selected = [model for model in data["models"] if model["name"] == name]
+    if not selected:
+        raise ValueError(f"Model is not in the maintained catalog: {name}")
+    return {**data, "models": selected}
 
 
 def model_path(root, model):
@@ -51,6 +73,8 @@ def directory_lock(path):
 
 
 def provision(root, data, source=None):
+    if source and len(data["models"]) != 1:
+        raise ValueError("Use --model NAME with --source when the catalog contains multiple models")
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     with directory_lock(root / ".provision.lock"):

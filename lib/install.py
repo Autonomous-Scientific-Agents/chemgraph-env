@@ -12,7 +12,7 @@ from core import (
     LIB, ROOT, assert_base_matches, check_base, digest, module_setup, pip_check,
     profile_identity, protected, read_json, run, snapshot, write_json,
 )
-from models import records
+from models import catalog, check_mace_pin, records
 
 
 def reject_protected(report, profile):
@@ -61,6 +61,8 @@ def verify_environment(profile, python, base, baseline, log=None):
 
 
 def prepare_lock(profile, output):
+    model_catalog = catalog(ROOT / "models/catalog.toml")
+    check_mace_pin(model_catalog, (ROOT / "requirements/base.in").read_text())
     base = snapshot(profile)
     check_base(profile, base)
     output.mkdir(parents=True, exist_ok=False)
@@ -95,6 +97,8 @@ def prepare_lock(profile, output):
             resolved.write_text(report_requirements(report))
             run(profile, [python, "-m", "pip", "install", "--no-deps", "-r", resolved], log=log)
             installed = verify_environment(profile, python, base, baseline, log)
+            if installed["packages"].get("mace-torch", {}).get("version") != model_catalog["mace_version"]:
+                raise ValueError("Resolved MACE version differs from the model catalog")
             freeze = run(profile, [python, "-m", "pip", "freeze", "--all", "--local"],
                          capture=True, log=log).stdout
             (output / "overlay.txt").write_text(freeze)
@@ -173,6 +177,7 @@ fi
 def install(profile, method, prefix, model_root, data):
     if prefix.exists():
         raise ValueError(f"Deployment already exists; choose a new versioned prefix: {prefix}")
+    check_mace_pin(data, (ROOT / "requirements/base.in").read_text())
     lock = load_lock(profile)
     base = snapshot(profile)
     check_base(profile, base)
@@ -223,6 +228,8 @@ def install(profile, method, prefix, model_root, data):
             version_command = [uv, "--version"] if method == "uv" else [python, "-m", "pip", "--version"]
             manifest["installer_version"] = run(profile, version_command, capture=True, log=log).stdout.strip()
             installed = verify_environment(profile, python, base, lock["base_conflicts"], log)
+            if installed["packages"].get("mace-torch", {}).get("version") != data["mace_version"]:
+                raise ValueError("Installed MACE version differs from the model catalog")
             for name, version in lock["overlay_packages"].items():
                 actual = installed["packages"].get(name, {})
                 if actual.get("version") != version or not Path(actual["location"]).is_relative_to(venv):

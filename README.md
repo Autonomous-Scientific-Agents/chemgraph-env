@@ -1,6 +1,6 @@
 # ChemGraph environments for ALCF
 
-Maintainer tools for building shared **ChemGraph + ASE + MACE-MP + tblite**
+Maintainer tools for building shared **ChemGraph + ASE + MACE-MP + MACE-Polar + tblite**
 environments on Crux, Polaris, and Aurora. Users run ChemGraph elsewhere and
 submit calculations through its IRI skill. They do not install an environment
 or supply paths to the standard pretrained model.
@@ -77,9 +77,13 @@ base inventory, interpreter path/version, loaded modules, source requirements,
 and the overlay checksum. `prepare.log` is a local diagnostic artifact.
 
 The shared inputs pin ChemGraph to commit
-`465e03436e56e1374480fe5a3bd4a735a1c56db2` and MACE to `0.3.16`. Crux's initial
-profile pins CPU PyTorch `2.8.0+cpu`. These are deliberate version choices,
-not claims to be the latest releases.
+`465e03436e56e1374480fe5a3bd4a735a1c56db2` and `mace-torch[polar]` to `0.3.17`.
+The Polar engine, `graph-longrange`, is pinned to commit
+`6a86de5e3ed35fd86a55fc046aa085fe48a72764` (v0.4.4) from
+`WillBaldwin0/graph_electrostatics`, following the
+[MACE-Polar installation guide](https://mace-docs.readthedocs.io/en/latest/guide/polar_mace.html).
+Crux's initial profile pins CPU PyTorch `2.8.0+cpu`. These are deliberate version
+choices; subsequent releases are upgraded explicitly, as described below.
 
 **Why a separate lock step?** uv does not resolve against inherited site
 packages. Both installers therefore consume the complete, already-resolved
@@ -93,10 +97,24 @@ optimized GPU stack. Do not hand-edit the overlay to bypass a conflict.
 python3 scripts/provision-models.py --model-root "$DEPLOY_ROOT/models"
 ```
 
-This downloads `medium-mpa-0`, verifies its pinned SHA-256, and publishes it as a
-read-only file. Repeated runs verify and reuse it. A bad or incomplete download
-is never published. To provision without network access, pass
-`--source /absolute/path/to/mace-mpa-0-medium.model`; the same checksum is required.
+This downloads `medium-mpa-0` and `polar-1-m`, verifies their pinned SHA-256
+checksums, and publishes read-only files. Repeated runs verify and reuse them.
+A bad or incomplete download is never published. Use `--model NAME` to provision
+just one catalog entry. Both checkpoints must exist before installing an environment.
+
+For offline provisioning, select the model associated with each local file:
+
+```bash
+python3 scripts/provision-models.py --model-root "$DEPLOY_ROOT/models" \
+  --model medium-mpa-0 --source /absolute/path/to/mace-mpa-0-medium.model
+python3 scripts/provision-models.py --model-root "$DEPLOY_ROOT/models" \
+  --model polar-1-m --source /absolute/path/to/MACE-POLAR-1-M.model
+```
+
+The same checksum checks apply. MACE-MP weights use the MIT license; MACE-Polar
+weights use [ASL](https://github.com/gabor1/ASL), as stated in their
+[upstream release](https://github.com/ACEsuit/mace-foundations/releases/tag/mace_polar_1).
+Model provenance and license identifiers are recorded in the deployment manifest.
 
 Weights are outside Git and outside the virtual environments:
 
@@ -111,10 +129,11 @@ Weights are outside Git and outside the virtual environments:
     validation-tools/
     overlay.txt
   models/mace/medium-mpa-0/<sha256>/model.model
+  models/mace/polar-1-m/<sha256>/model.model
 ```
 
 Provision once per filesystem accessible to the relevant machines. Different
-module versions and both installer methods can share the same checkpoint.
+module versions and both installer methods can share the same checkpoints.
 
 ### 4. Install into its final versioned directory
 
@@ -151,9 +170,13 @@ python3 scripts/validate.py compute \
 
 This loads `setup.sh` in a fresh noninteractive Bash process. It checks the
 dependency closure and PyTorch origin, performs a device operation, and runs
-EMT, tblite, default MACE-MP, and named MACE-MP energy/force calculations.
+EMT, tblite, and default/named MACE-MP and MACE-Polar energy/force calculations.
+Polar checks also verify finite molecular dipoles and pass charge, multiplicity,
+and external-field metadata through ChemGraph's calculator interface.
 Model downloads/network connections are disabled during these calculations.
-Default and named-model energies must agree within the smoke-test tolerance.
+Default and named-model energies must agree within the smoke-test tolerance for
+each model family. The requested machine device must work for both families;
+there is no silent CPU fallback for an unsupported Aurora XPU operation.
 
 From a **second authorized account**, run:
 
@@ -177,7 +200,11 @@ python3 scripts/prepare-iri.py \
 Stage and submit this directory through **ChemGraph's existing IRI skill** using
 the correct project, queue, filesystems, and remote workspace. Use the generated
 `launch.sh`: it invokes the unchanged `calculate.py` and records application
-success afterward. No model path appears in `input.json`; it uses MACE's default.
+success afterward. The default acceptance job uses `mace_polar` with its model
+omitted, exercising ChemGraph's `polar-1-m` default and the shared cache.
+No model path appears in `input.json`. You can additionally prepare an MP job
+with `--calculator mace_mp`; publishing requires the Polar IRI run, while the
+compute report must cover both MP and Polar.
 Collect the directory, including `acceptance.json`, `result.json`, and job logs.
 Record the accepted IRI job ID and verify that this job completed successfully.
 
@@ -221,9 +248,14 @@ under `mace/` pointing to shared checkpoints. The default cache root is
 Override `CHEMGRAPH_CACHE_ROOT` with an absolute user-writable location when
 home storage is unsuitable. It must be visible wherever that user's job runs.
 
-MACE sees its normal cache filename. ChemGraph can omit `model` or pass
-`model="medium-mpa-0"`; no path lookup is added to `run_ase_core()` and IRI needs
-no model-specific behavior. Other models download into that user's writable
+MACE sees the normal cache filename for each model family. ChemGraph can omit
+`model`, use `model="medium-mpa-0"` with `calculator_type="mace_mp"`, or use
+`model="polar-1-m"` with `calculator_type="mace_polar"`. No path lookup is added
+to `run_ase_core()` and IRI needs no model-specific behavior.
+
+**ChemGraph defaults to MACE-Polar when `graph-longrange` is installed.** Set
+`calculator_type="mace_mp"` explicitly for MP calculations. The generated
+`calculators.json` includes both families. Other models download into that user's writable
 cache, subject to network access and their licenses. Explicit model paths still
 work. Existing conflicting cache entries are preserved and reported as errors.
 
@@ -231,6 +263,25 @@ Runtime compilation caches and outputs stay user-writable. The setup script
 does not set `CHEMGRAPH_LOG_DIR`; ChemGraph's job launcher sets it to the run
 directory. It also does not select a calculator device: use the generated
 examples (`cpu`, `cuda`, or `xpu`; `float32` on Aurora).
+
+## Upgrading MACE
+
+The implementation does not restrict deployments to a hard-coded MACE release.
+Versions remain exact and reproducible for each deployment:
+
+1. Update `mace-torch[polar]==...` in `requirements/base.in` and `mace_version`
+   in `models/catalog.toml` together. A mismatch stops lock preparation/installation.
+2. Check the new release's Polar requirements and update the pinned
+   `graph-longrange` commit when needed. Keep the `polar` extra so the dependency
+   audit checks its version requirements and transitive dependencies.
+3. Verify the model URLs, loader/cache filenames, and default model names against
+   that release; update the catalog and acceptance examples if they changed.
+4. Regenerate each machine lock in a new directory, build a new versioned prefix,
+   and rerun compute, second-account, and IRI acceptance. Reuse unchanged shared
+   checkpoint files by checksum. An older lock is rejected after requirements change.
+
+New version pins do not establish compatibility: the site PyTorch stack remains
+protected, and the simulation tests must pass before publishing the new paths.
 
 ## Development and boundaries
 
@@ -248,7 +299,7 @@ CI never claims to validate ALCF GPU execution.
 Revalidate after changing dependencies, models, or a site stack. Site updates
 can retire a module underneath an otherwise immutable overlay. There is no
 automatic upgrade, fallback module, force reinstall, or scheduler integration.
-UMA, MACE-Polar, external engine builds, distributed tuning, and very-large-scale
+UMA, external engine builds, distributed tuning, and very-large-scale
 Python import optimization are outside this first release.
 
 References: [ChemGraph](https://github.com/argonne-lcf/ChemGraph),

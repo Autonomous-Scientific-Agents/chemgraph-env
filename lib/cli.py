@@ -13,7 +13,7 @@ if sys.version_info < (3, 11):
 from core import ROOT, absolute, load_profile
 from handoff import prepare_iri, publish, validate
 from install import install, prepare_lock
-from models import catalog, provision
+from models import catalog, provision, select_models
 
 
 def parser():
@@ -36,6 +36,7 @@ def parser():
     models = commands.add_parser("provision-models", help="Download and verify shared weights")
     models.add_argument("--model-root", type=absolute, required=True)
     models.add_argument("--source", type=absolute, help="Use a local checkpoint instead of downloading")
+    models.add_argument("--model", help="Provision only this catalog model; required with --source for multiple models")
     models.add_argument("--dry-run", action="store_true")
 
     verify = commands.add_parser("validate", help="Run checks under the installed setup.sh")
@@ -46,6 +47,8 @@ def parser():
     iri = commands.add_parser("prepare-iri", help="Prepare, but do not submit, an IRI acceptance run")
     iri.add_argument("--prefix", type=absolute, required=True)
     iri.add_argument("--output", type=absolute, required=True)
+    iri.add_argument("--calculator", choices=["mace_mp", "mace_polar"], default="mace_polar",
+                     help="Acceptance calculator; publishing requires the default mace_polar run")
 
     release = commands.add_parser("publish", help="Emit skill snippets after acceptance")
     release.add_argument("--prefix", type=absolute, required=True)
@@ -81,7 +84,7 @@ def main(argv=None):
                 install(profile, args.method, args.prefix, args.model_root,
                         catalog(ROOT / "models/catalog.toml"))
         elif args.command == "provision-models":
-            data = catalog(ROOT / "models/catalog.toml")
+            data = select_models(catalog(ROOT / "models/catalog.toml"), args.model)
             if args.dry_run:
                 print(json.dumps({"root": str(args.model_root), "catalog": data}, indent=2))
             else:
@@ -90,7 +93,7 @@ def main(argv=None):
         elif args.command == "validate":
             validate(args.prefix, args.kind, args.output)
         elif args.command == "prepare-iri":
-            prepare_iri(args.prefix, args.output)
+            prepare_iri(args.prefix, args.output, args.calculator)
         else:
             publish(args.prefix, args.compute_report, args.access_report,
                     args.iri_run, args.iri_job_id, args.output)

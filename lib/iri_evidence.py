@@ -21,6 +21,9 @@ def main():
         raise ValueError("Deployment manifest changed")
     if sha("calculate.py") != expected["calculate_sha256"]:
         raise ValueError("calculate.py differs from the installed ChemGraph helper")
+    params = json.loads(Path("input.json").read_text())
+    if params.get("calculator", {}).get("calculator_type") != expected["calculator_type"]:
+        raise ValueError("Input calculator differs from the acceptance configuration")
     job = os.environ.get("PBS_JOBID")
     nodes = {h.split(".")[0] for h in Path(os.environ["PBS_NODEFILE"]).read_text().split()}
     if not job or socket.gethostname().split(".")[0] not in nodes:
@@ -35,6 +38,8 @@ def main():
     if started != evidence:
         raise ValueError("Acceptance job changed between start and completion")
     result = json.loads(Path("result.json").read_text())
+    if result.get("simulation_input", {}).get("calculator", {}).get("calculator_type") != expected["calculator_type"]:
+        raise ValueError("Result calculator differs from the acceptance configuration")
     energy = result.get("potential_energy")
     if (result.get("success") is not True or result.get("converged") is not True
             or isinstance(energy, bool) or not isinstance(energy, (int, float))
