@@ -16,7 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shellcheck", default="shellcheck")
     args = parser.parse_args()
-    entries = sorted((ROOT / "machines").glob("*/*.sh"))
+    entries = sorted((ROOT / "machines").glob("*/*.sh")) + sorted((ROOT / "auto").glob("*.sh"))
     for path in entries:
         subprocess.run(["bash", "-n", str(path)], check=True)
     subprocess.run([args.shellcheck, *map(str, entries)], check=True)

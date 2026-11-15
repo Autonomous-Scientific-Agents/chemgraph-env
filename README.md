@@ -16,6 +16,11 @@ machine before publishing a path.
 | Polaris | `machines/polaris/install-uv.sh` | `machines/polaris/install-native.sh` | `conda/2026-10-01`, activated base, venv overlay | CUDA |
 | Aurora | `machines/aurora/install-uv.sh` | `machines/aurora/install-native.sh` | `frameworks/2026.1.0`, venv overlay | XPU |
 
+[`auto/`](auto/) automates releases: it keeps a tested `<machine>_chemgraph_env`
+on Aurora, Polaris, Sophia and Crux with one dependency lock for all machines,
+and builds, verifies and promotes a new release whenever ChemGraph or IQC
+changes. See [`auto/README.md`](auto/README.md).
+
 Both methods on a machine use the **same site interpreter and dependency lock**.
 The uv method uses `uv venv` and `uv pip install`; native uses `python -m venv`
 and pip. Native Polaris extends the Conda base with a venv rather than cloning

@@ -1,0 +1,21 @@
+# Inputs of the lock shared by every machine (lock.sh). lock.sh replaces each
+# "@main" with the commit it resolved, so a lock always names exact commits.
+# torch is resolved as the CPU build; each machine installs the same version
+# for its own hardware first (TORCH_INDEX in machines/<machine>.conf).
+torch==2.13.0
+chemgraph[parsl,ensemble_launcher,test,calculators] @ git+https://github.com/argonne-lcf/ChemGraph.git@main
+iqc @ git+https://github.com/Autonomous-Scientific-Agents/IQC.git@main
+# Locked like everything else (uv venv --seed would add uv-version-dependent ones).
+pip
+aiosqlite
+sqlite-vec
+pyscf
+argcomplete
+psutil
+nglview
+openpyxl
+xlrd
+# mpi4py with the mpich wheel works on one node; rebuild mpi4py against the
+# site MPI for multi-node runs.
+mpi4py
+mpich

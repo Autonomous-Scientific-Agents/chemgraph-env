@@ -1,0 +1,6 @@
+#!/bin/bash
+# Compute-node verification of a built release; queued by common.sh's
+# submit_verify with -v MACHINE=...,RELEASE=... (and -A/-q/-l per machine).
+#PBS -j oe
+cd "$PBS_O_WORKDIR" || exit 1
+bash verify.sh "$MACHINE" "$RELEASE"
