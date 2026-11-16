@@ -22,7 +22,7 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Bash syntax
         run: |
-          for script in machines/*/*.sh; do
+          for script in machines/*/*.sh auto/*.sh; do
             bash -n "$script"
           done
   lint:
